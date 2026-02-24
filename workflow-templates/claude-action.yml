@@ -1,0 +1,17 @@
+name: Claude Code Action (Reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: write
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.CLAUDE_API_KEY }}
