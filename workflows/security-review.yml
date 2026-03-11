@@ -1,4 +1,4 @@
-name: Claude Security Review (Reusable)
+name: Claude Security Review
 
 on:
   workflow_call:
@@ -17,6 +17,13 @@ jobs:
           fetch-depth: 2
 
       - uses: anthropics/claude-code-security-review@main
+        id: security-review
         with:
           comment-pr: true
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+
+      - name: Block merge if security issues found
+        if: steps.security-review.outputs.findings-count > 0
+        run: |
+          echo "::error::Security review found ${{ steps.security-review.outputs.findings-count }} issue(s). Fix them before merging."
+          exit 1
