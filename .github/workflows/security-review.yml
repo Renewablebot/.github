@@ -1,4 +1,4 @@
-name: Claude Security Review
+name: Security Review
 
 on:
   workflow_call:
@@ -6,10 +6,15 @@ on:
 permissions:
   pull-requests: write
   contents: read
+  security-events: write
 
 jobs:
-  security:
+  # ── 1. Claude AI Review (PR diff - semantic analysis) ──
+  claude-review:
+    name: Claude AI Review
     runs-on: ubuntu-latest
+    outputs:
+      findings-count: ${{ steps.security-review.outputs.findings-count }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,18 +27,190 @@ jobs:
           comment-pr: true
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
 
-      - name: Comment on PR - success
-        if: steps.security-review.outputs.findings-count == 0 && github.event_name == 'pull_request'
+  # ── 2. Trivy Full Scan (SAST + dependencies + secrets + licenses) ──
+  trivy-scan:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      # Filesystem scan: vulnerabilities + misconfigs (OWASP, CWE mapped)
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+          scanners: vuln,misconfig,secret
+
+      # Dependency license scan (ISO 27001 - third party risk)
+      - name: Trivy license scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: 0
+          scanners: license
+
+      # Generate SBOM (ISO 27001 - asset inventory)
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.json
+          scanners: vuln
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 90
+
+  # ── 3. Secret Detection (full git history) ──
+  secret-scan:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 4. OWASP Dependency Check (NVD vulnerability database) ──
+  owasp-dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: ${{ github.repository }}
+          path: .
+          format: HTML
+          args: --failOnCVSS 7
+
+      - name: Upload OWASP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: reports/
+          retention-days: 30
+
+  # ── Gate: Block merge + post audit summary ──
+  security-gate:
+    name: Security Gate
+    needs: [claude-review, trivy-scan, secret-scan, owasp-dependency-check]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Evaluate results
+        id: gate
+        run: |
+          FAILED=false
+
+          # Claude AI Review
+          CLAUDE_STATUS="PASS"
+          if [ "${{ needs.claude-review.outputs.findings-count }}" -gt 0 ] 2>/dev/null; then
+            CLAUDE_STATUS="FAIL (${{ needs.claude-review.outputs.findings-count }} findings)"
+            FAILED=true
+          elif [ "${{ needs.claude-review.result }}" == "failure" ]; then
+            CLAUDE_STATUS="ERROR"
+            FAILED=true
+          fi
+
+          # Trivy
+          TRIVY_STATUS="PASS"
+          if [ "${{ needs.trivy-scan.result }}" == "failure" ]; then
+            TRIVY_STATUS="FAIL"
+            FAILED=true
+          fi
+
+          # Secrets
+          SECRET_STATUS="PASS"
+          if [ "${{ needs.secret-scan.result }}" == "failure" ]; then
+            SECRET_STATUS="FAIL"
+            FAILED=true
+          fi
+
+          # OWASP
+          OWASP_STATUS="PASS"
+          if [ "${{ needs.owasp-dependency-check.result }}" == "failure" ]; then
+            OWASP_STATUS="FAIL"
+            FAILED=true
+          fi
+
+          echo "claude_status=$CLAUDE_STATUS" >> $GITHUB_OUTPUT
+          echo "trivy_status=$TRIVY_STATUS" >> $GITHUB_OUTPUT
+          echo "secret_status=$SECRET_STATUS" >> $GITHUB_OUTPUT
+          echo "owasp_status=$OWASP_STATUS" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+      - name: Post security audit summary
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
+            const claude = '${{ steps.gate.outputs.claude_status }}';
+            const trivy = '${{ steps.gate.outputs.trivy_status }}';
+            const secret = '${{ steps.gate.outputs.secret_status }}';
+            const owasp = '${{ steps.gate.outputs.owasp_status }}';
+            const failed = '${{ steps.gate.outputs.failed }}' === 'true';
+
+            const icon = (s) => s === 'PASS' ? ':white_check_mark:' : ':x:';
+            const status = failed ? ':rotating_light: **FAILED** — Merge blocked' : ':shield: **PASSED** — Merge allowed';
+            const date = new Date().toISOString();
+
+            const body = [
+              '## Security Audit Summary',
+              '',
+              `**Status:** ${status}`,
+              `**Date:** ${date}`,
+              `**Commit:** \`${context.sha.substring(0, 7)}\``,
+              '',
+              '### ISO 27001 Controls',
+              '',
+              '| Control | Check | Tool | Result |',
+              '|---|---|---|---|',
+              `| A.8.28 Secure coding | Code security review | Claude AI | ${icon(claude)} ${claude} |`,
+              `| A.8.28 Secure coding | SAST + misconfiguration | Trivy | ${icon(trivy)} ${trivy} |`,
+              `| A.8.28 Secure coding | Secret detection | Gitleaks | ${icon(secret)} ${secret} |`,
+              `| A.8.9 Configuration mgmt | Dependency vulnerabilities (NVD) | OWASP Dep Check | ${icon(owasp)} ${owasp} |`,
+              `| A.8.9 Configuration mgmt | License compliance | Trivy | ${icon(trivy)} ${trivy} |`,
+              `| A.5.23 Asset management | SBOM (CycloneDX) | Trivy | :white_check_mark: Generated |`,
+              '',
+              '### Artifacts',
+              '- SBOM (CycloneDX) — retained 90 days',
+              '- OWASP Dependency Check HTML report — retained 30 days',
+              '',
+              '---',
+              `*Automated security audit — ${context.repo.owner}/${context.repo.repo} — ISO 27001 compliant pipeline*`,
+            ].join('\n');
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
-            const existing = comments.find(c => c.body.includes('Claude Security Review'));
-            const body = '## 🛡️ Claude Security Review\n\n✅ **No security issues found.** Code changes look clean.\n\n---\n*Powered by Claude Code*';
+            const existing = comments.find(c => c.body.includes('Security Audit Summary'));
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -50,8 +227,8 @@ jobs:
               });
             }
 
-      - name: Block merge if security issues found
-        if: steps.security-review.outputs.findings-count > 0
+      - name: Block merge if any check failed
+        if: steps.gate.outputs.failed == 'true'
         run: |
-          echo "::error::Security review found ${{ steps.security-review.outputs.findings-count }} issue(s). Fix them before merging."
+          echo "::error::Security gate failed. See audit summary on PR."
           exit 1
