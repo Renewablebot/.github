@@ -6,7 +6,6 @@ on:
 permissions:
   pull-requests: write
   contents: read
-  security-events: write
 
 jobs:
   # ── 1. Claude AI Review (PR diff - semantic analysis) ──
@@ -165,7 +164,7 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
 
       - name: Post security audit summary
-        if: github.event_name == 'pull_request'
+        if: github.event.pull_request.number
         uses: actions/github-script@v7
         with:
           script: |
@@ -174,6 +173,7 @@ jobs:
             const secret = '${{ steps.gate.outputs.secret_status }}';
             const owasp = '${{ steps.gate.outputs.owasp_status }}';
             const failed = '${{ steps.gate.outputs.failed }}' === 'true';
+            const prNumber = ${{ github.event.pull_request.number }};
 
             const icon = (s) => s === 'PASS' ? ':white_check_mark:' : ':x:';
             const status = failed ? ':rotating_light: **FAILED** — Merge blocked' : ':shield: **PASSED** — Merge allowed';
@@ -208,7 +208,7 @@ jobs:
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: prNumber,
             });
             const existing = comments.find(c => c.body.includes('Security Audit Summary'));
             if (existing) {
@@ -222,7 +222,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number: prNumber,
                 body: body,
               });
             }
