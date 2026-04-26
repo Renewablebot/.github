@@ -38,7 +38,7 @@ jobs:
 
       # Filesystem scan: vulnerabilities + misconfigs (OWASP, CWE mapped)
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -49,7 +49,7 @@ jobs:
 
       # Dependency license scan (ISO 27001 - third party risk)
       - name: Trivy license scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -59,7 +59,7 @@ jobs:
 
       # Generate SBOM (ISO 27001 - asset inventory)
       - name: Generate SBOM
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
