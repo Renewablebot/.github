@@ -2,6 +2,23 @@ name: Security Review
 
 on:
   workflow_call:
+    inputs:
+      # Optional suppression file for OWASP Dependency Check. Used when
+      # NVD's CPE matching flags a confirmed false positive (e.g. the
+      # `uuid` package is flagged for GHSA-w5hq-g745-h8pq across all
+      # versions because the NVD CPE entry lacks a `version_end_excluding`
+      # clause, even though the vulnerability was fixed in uuid 3.0.0).
+      #
+      # Path is relative to the consuming repo's root. The XML schema
+      # is documented at
+      # https://jeremylong.github.io/DependencyCheck/general/suppression.html
+      # — each entry should cite the GHSA/CVE id and the rationale so a
+      # future reader can re-verify.
+      owasp-suppression-file:
+        description: "Path to an OWASP Dep Check suppression XML, relative to the consuming repo root. Leave empty to disable."
+        type: string
+        required: false
+        default: ""
 
 permissions:
   pull-requests: write
@@ -105,7 +122,12 @@ jobs:
           project: ${{ github.repository }}
           path: .
           format: HTML
-          args: --failOnCVSS 7
+          # `--suppression` is appended only when the consuming repo
+          # passes a non-empty file path. Keeps the default behaviour
+          # identical for every existing consumer (no suppression).
+          args: >-
+            --failOnCVSS 7
+            ${{ inputs.owasp-suppression-file != '' && format('--suppression {0}', inputs.owasp-suppression-file) || '' }}
 
       - name: Upload OWASP report
         if: always()
