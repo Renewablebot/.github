@@ -122,11 +122,20 @@ jobs:
           project: ${{ github.repository }}
           path: .
           format: HTML
-          # `--suppression` is appended only when the consuming repo
-          # passes a non-empty file path. Keeps the default behaviour
-          # identical for every existing consumer (no suppression).
+          # `--failOnCVSS 7` is the gate — it fails the build only on a real
+          # finding at CVSS >= 7. `--exclude` keeps the Gradle *wrapper* jar
+          # (build tooling — a repo's only coordinate-less jar) out of the scan:
+          # identifying it needs a Maven Central SHA-1 lookup, and
+          # search.maven.org now 403s automated/CI clients, which red-gated PRs
+          # on an external outage rather than a real vulnerability (MV2-513).
+          # All analyzers stay enabled; npm/JS (Node Audit + RetireJS) and
+          # Gradle-coordinate deps are still fully scanned, and wrapper
+          # integrity is covered separately by Gradle wrapper-validation.
+          # `--suppression` is appended only when the consuming repo passes a
+          # non-empty file path (identical default behaviour for every consumer).
           args: >-
             --failOnCVSS 7
+            --exclude "**/gradle-wrapper.jar"
             ${{ inputs.owasp-suppression-file != '' && format('--suppression {0}', inputs.owasp-suppression-file) || '' }}
 
       - name: Upload OWASP report
