@@ -25,25 +25,7 @@ permissions:
   contents: read
 
 jobs:
-  # ── 1. Claude AI Review (PR diff - semantic analysis) ──
-  claude-review:
-    name: Claude AI Review
-    runs-on: ubuntu-latest
-    outputs:
-      findings-count: ${{ steps.security-review.outputs.findings-count }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
-
-      - uses: anthropics/claude-code-security-review@main
-        id: security-review
-        with:
-          comment-pr: true
-          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
-
-  # ── 2. Trivy Full Scan (SAST + dependencies + secrets + licenses) ──
+  # ── 1. Trivy Full Scan (SAST + dependencies + secrets + licenses) ──
   trivy-scan:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
@@ -149,13 +131,12 @@ jobs:
   # ── Gate: Block merge + post audit summary ──
   security-gate:
     name: Security Gate
-    # claude-review is deliberately NOT in `needs`. It is the only job here
-    # that calls an external service, it has no timeout (so a hang inherits
-    # GitHub's 6-hour default), and because this gate is the sole required
-    # status check, one slow review blocked merges across every repo in the
-    # org. It still runs and still comments on the PR — it just cannot hold
-    # a merge hostage. Blocking security signal comes from Trivy, Gitleaks
-    # and OWASP, all of which run locally and finish in under a minute.
+    # The AI code review that used to run here has been removed — it was the
+    # only job calling an external service, had no timeout, and repeatedly
+    # hung long enough to block merges org-wide while every other check was
+    # green. A replacement review system is being designed separately.
+    # Security signal here is Trivy, Gitleaks and OWASP: all local, all
+    # sub-minute.
     needs: [trivy-scan, secret-scan, owasp-dependency-check]
     runs-on: ubuntu-latest
     if: always()
@@ -164,13 +145,6 @@ jobs:
         id: gate
         run: |
           FAILED=false
-
-          # Claude AI Review — advisory only. Not in `needs`, so its result
-          # is not readable here and must not be reported as PASS/FAIL: this
-          # summary is ISO 27001 evidence and claiming a verdict for a job we
-          # no longer wait on would be false. Its findings are posted to the
-          # PR directly by the review action.
-          CLAUDE_STATUS="ADVISORY"
 
           # Trivy
           TRIVY_STATUS="PASS"
@@ -193,7 +167,6 @@ jobs:
             FAILED=true
           fi
 
-          echo "claude_status=$CLAUDE_STATUS" >> $GITHUB_OUTPUT
           echo "trivy_status=$TRIVY_STATUS" >> $GITHUB_OUTPUT
           echo "secret_status=$SECRET_STATUS" >> $GITHUB_OUTPUT
           echo "owasp_status=$OWASP_STATUS" >> $GITHUB_OUTPUT
@@ -204,17 +177,13 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const claude = '${{ steps.gate.outputs.claude_status }}';
             const trivy = '${{ steps.gate.outputs.trivy_status }}';
             const secret = '${{ steps.gate.outputs.secret_status }}';
             const owasp = '${{ steps.gate.outputs.owasp_status }}';
             const failed = '${{ steps.gate.outputs.failed }}' === 'true';
             const prNumber = ${{ github.event.pull_request.number }};
 
-            const icon = (s) =>
-              s === 'PASS' ? ':white_check_mark:'
-              : s === 'ADVISORY' ? ':information_source:'
-              : ':x:';
+            const icon = (s) => s === 'PASS' ? ':white_check_mark:' : ':x:';
             const status = failed ? ':rotating_light: **FAILED** — Merge blocked' : ':shield: **PASSED** — Merge allowed';
             const date = new Date().toISOString();
 
@@ -229,7 +198,6 @@ jobs:
               '',
               '| Control | Check | Tool | Result |',
               '|---|---|---|---|',
-              `| A.8.28 Secure coding | Code security review | Claude AI (advisory, non-blocking) | ${icon(claude)} ${claude} |`,
               `| A.8.28 Secure coding | SAST + misconfiguration | Trivy | ${icon(trivy)} ${trivy} |`,
               `| A.8.28 Secure coding | Secret detection | Gitleaks | ${icon(secret)} ${secret} |`,
               `| A.8.9 Configuration mgmt | Dependency vulnerabilities (NVD) | OWASP Dep Check | ${icon(owasp)} ${owasp} |`,
