@@ -110,13 +110,21 @@ jobs:
           # identifying it needs a Maven Central SHA-1 lookup, and
           # search.maven.org now 403s automated/CI clients, which red-gated PRs
           # on an external outage rather than a real vulnerability (MV2-513).
-          # All analyzers stay enabled; npm/JS (Node Audit + RetireJS) and
-          # Gradle-coordinate deps are still fully scanned, and wrapper
-          # integrity is covered separately by Gradle wrapper-validation.
+          # `--disableNodeAudit` drops the one analyzer that phones npm's audit
+          # API at scan time. That endpoint hangs intermittently (2026-09-04:
+          # monitoring-v2-ui PR #369 failed 7 of 8 attempts on a 60 s timeout
+          # while npm's status page read all-green), and Dependency-Check turns
+          # an analyzer error into a hard failure — the same external-outage
+          # red-gate MV2-513 removed for Maven Central. Coverage is unchanged:
+          # Trivy scans the same package-lock.json for npm advisories in the
+          # step above, and RetireJS + the NVD/CPE analyzers stay on. Gradle-
+          # coordinate deps are still fully scanned, and wrapper integrity is
+          # covered separately by Gradle wrapper-validation.
           # `--suppression` is appended only when the consuming repo passes a
           # non-empty file path (identical default behaviour for every consumer).
           args: >-
             --failOnCVSS 7
+            --disableNodeAudit
             --exclude "**/gradle-wrapper.jar"
             ${{ inputs.owasp-suppression-file != '' && format('--suppression {0}', inputs.owasp-suppression-file) || '' }}
 
